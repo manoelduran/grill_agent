@@ -1,5 +1,4 @@
 import ollama from "ollama";
-import { z } from "zod";
 
 /*
 ╔══════════════════════════════════════════════════════════════════════════╗
@@ -24,7 +23,6 @@ import { z } from "zod";
 | The whole "Agent", in this file, is Grillman: the LLM + the rules for
 | when it can act, how many times, for how long, and with which Tools.
 */
-
 
 /*
 ╔══════════════════════════════════════════════════════════════════════════╗
@@ -172,7 +170,9 @@ async function runGrillmanAgent(customer: string, desiredDoneness: Doneness) {
     |------------------------------------------------------------------
     */
     if (state.order.completed) {
-      console.log(`\n✅ Order completed in ${iteration} iterations / ${toolCallsUsed} tool calls.`);
+      console.log(
+        `\n✅ Order completed in ${iteration} iterations / ${toolCallsUsed} tool calls.`,
+      );
       break;
     }
 
@@ -184,7 +184,9 @@ async function runGrillmanAgent(customer: string, desiredDoneness: Doneness) {
     |------------------------------------------------------------------
     */
     if (iteration > MAX_ITERATIONS) {
-      console.warn(`\n🛑 Max iterations (${MAX_ITERATIONS}) reached. Aborting order.`);
+      console.warn(
+        `\n🛑 Max iterations (${MAX_ITERATIONS}) reached. Aborting order.`,
+      );
       break;
     }
     if (Date.now() - startTime > TIMEOUT_MS) {
@@ -192,7 +194,9 @@ async function runGrillmanAgent(customer: string, desiredDoneness: Doneness) {
       break;
     }
     if (toolCallsUsed >= MAX_TOOL_CALLS) {
-      console.warn(`\n🛑 Cost limit (${MAX_TOOL_CALLS} tool calls) reached. Aborting order.`);
+      console.warn(
+        `\n🛑 Cost limit (${MAX_TOOL_CALLS} tool calls) reached. Aborting order.`,
+      );
       break;
     }
 
@@ -231,8 +235,12 @@ async function runGrillmanAgent(customer: string, desiredDoneness: Doneness) {
       | termination — we log the failure as an observation and let the
       | loop try again, still protected by the guardrails.
       */
-      console.warn("  (model replied with free text instead of a tool call):", response.message.content);
-      lastObservation = "You replied with free text last turn. Call a real Tool now.";
+      console.warn(
+        "  (model replied with free text instead of a tool call):",
+        response.message.content,
+      );
+      lastObservation =
+        "You replied with free text last turn. Call a real Tool now.";
       continue;
     }
 
@@ -266,7 +274,13 @@ async function runGrillmanAgent(customer: string, desiredDoneness: Doneness) {
 
       let result: ToolResult;
       try {
-        result = await executeGrillmanTool(state, name, args, idempotencyStore, idempotencyKey);
+        result = await executeGrillmanTool(
+          state,
+          name,
+          args,
+          idempotencyStore,
+          idempotencyKey,
+        );
       } catch (error) {
         result = {
           ok: false,
@@ -305,11 +319,26 @@ async function testIdempotency() {
   | different and irrelevant, and the result still matches.
   */
   const state = createInitialState("Test", "medium");
-  const r1 = await executeGrillmanTool(state, "check_grill", {}, store, "irrelevant-1");
-  const r2 = await executeGrillmanTool(state, "check_grill", {}, store, "irrelevant-2");
+  const r1 = await executeGrillmanTool(
+    state,
+    "check_grill",
+    {},
+    store,
+    "irrelevant-1",
+  );
+  const r2 = await executeGrillmanTool(
+    state,
+    "check_grill",
+    {},
+    store,
+    "irrelevant-2",
+  );
   console.log("check_grill 1st call:", r1.observation);
   console.log("check_grill 2nd call:", r2.observation);
-  console.log("Idempotent? ", JSON.stringify(r1) === JSON.stringify(r2) ? "YES" : "NO");
+  console.log(
+    "Idempotent? ",
+    JSON.stringify(r1) === JSON.stringify(r2) ? "YES" : "NO",
+  );
 
   /*
   | BUSINESS-RULE GUARD ≠ IDEMPOTENCY KEY
@@ -321,8 +350,20 @@ async function testIdempotency() {
   | state against a new attempt and rejecting it for a business rule.
   */
   await executeGrillmanTool(state, "get_meat", {}, store, "get-1");
-  const s1 = await executeGrillmanTool(state, "season_meat", {}, store, "season-attempt-A");
-  const s2 = await executeGrillmanTool(state, "season_meat", {}, store, "season-attempt-B");
+  const s1 = await executeGrillmanTool(
+    state,
+    "season_meat",
+    {},
+    store,
+    "season-attempt-A",
+  );
+  const s2 = await executeGrillmanTool(
+    state,
+    "season_meat",
+    {},
+    store,
+    "season-attempt-B",
+  );
   console.log("\nseason_meat (different keys) 1st call:", s1);
   console.log("season_meat (different keys) 2nd call:", s2);
   console.log(
@@ -343,8 +384,20 @@ async function testIdempotency() {
   const state2 = createInitialState("Test2", "medium");
   await executeGrillmanTool(state2, "get_meat", {}, store, "get-2");
   const retryKey = "season-attempt-C";
-  const firstTry = await executeGrillmanTool(state2, "season_meat", {}, store, retryKey);
-  const retryTry = await executeGrillmanTool(state2, "season_meat", {}, store, retryKey);
+  const firstTry = await executeGrillmanTool(
+    state2,
+    "season_meat",
+    {},
+    store,
+    retryKey,
+  );
+  const retryTry = await executeGrillmanTool(
+    state2,
+    "season_meat",
+    {},
+    store,
+    retryKey,
+  );
   console.log("\nseason_meat (same key, retry) 1st attempt:", firstTry);
   console.log("season_meat (same key, retry) 2nd attempt (cache):", retryTry);
   console.log(

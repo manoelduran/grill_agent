@@ -1,5 +1,4 @@
 import ollama from "ollama";
-import { z } from "zod";
 import fs from "node:fs";
 
 /*
@@ -128,9 +127,16 @@ function getAvailableTools(state: GrillmanState) {
   }
 }
 
-const MAX_ITERATIONS = 24;
-const TIMEOUT_MS = 45_000;
-const MAX_TOOL_CALLS = 24;
+/*
+| Bumped up from 24: after the simulated cooling event, finishing the
+| order can take a while if the model doesn't flip/check in a clean 1:1
+| ratio (each wasted flip costs an iteration without advancing doneness).
+| 24 was cutting it exactly at the point doneness finally matched the
+| order, with no iterations left to call remove_from_grill/serve_meat.
+*/
+const MAX_ITERATIONS = 32;
+const TIMEOUT_MS = 60_000;
+const MAX_TOOL_CALLS = 32;
 
 /*
 ╔══════════════════════════════════════════════════════════════════════════╗
@@ -266,10 +272,7 @@ interface CompressedHistory {
   recent: string[];
 }
 
-function compressHistory(
-  history: string[],
-  window: number,
-): CompressedHistory {
+function compressHistory(history: string[], window: number): CompressedHistory {
   if (history.length <= window) {
     return { summary: null, recent: history };
   }
@@ -370,6 +373,19 @@ function buildContext(
       if (state.meat.currentDoneness === state.order.desiredDoneness) {
         lines.push(
           `⚠️ The current doneness ALREADY MATCHES the order. Do NOT call check_doneness again — call remove_from_grill now.`,
+        );
+      } else {
+        /*
+        | RELIABILITY FIX — flip_meat also cools the grill (see
+        | grillman_tools.ts) but does nothing for doneness by itself; only
+        | check_doneness advances it. In real testing, the small model
+        | sometimes called flip_meat two or three times in a row before
+        | checking again, which only wastes heat (and iterations) for zero
+        | cooking progress. This line makes that tradeoff explicit instead
+        | of relying on the model to infer it from the Tool descriptions.
+        */
+        lines.push(
+          "Only check_doneness advances the cooking — flipping without checking wastes heat for no benefit. Check after every flip.",
         );
       }
       break;
@@ -493,6 +509,24 @@ async function runGrillmanAgent(
   let toolCallsUsed: number;
   let startTime: number;
 
+  /*
+  | STUCK DETECTOR — with temperature 0 (greedy decoding), a small model
+  | can fall into an exact repetition trap: it hallucinates the same
+  | malformed free-text "tool call" turn after turn, because the highest-
+  | probability continuation never changes if nothing forces it to. In
+  | testing, this happened right after `remove_from_grill` succeeded and
+  | the phase moved on to `ready_to_serve` — the model kept trying to call
+  | `remove_from_grill` again, in free text, 20+ times in a row, burning
+  | the whole iteration budget without ever reaching `serve_meat`.
+  |
+  | The fix isn't a better prompt (we already inject an explicit reminder
+  | for this exact phase) — it's breaking the determinism that's causing
+  | the trap. We escalate temperature the more times this happens in a
+  | row, so sampling has room to produce something other than the exact
+  | same wrong answer. Normal decision-making stays at temperature 0.
+  */
+  let consecutiveFreeTextFailures = 0;
+
   if (canResume && existingCheckpoint) {
     console.log(
       `\n♻️  RECOVERY: found a checkpoint for ${customer} (iteration ${existingCheckpoint.iteration}, ${existingCheckpoint.toolCallsUsed} tool calls already done). Resuming instead of starting over.`,
@@ -536,9 +570,7 @@ async function runGrillmanAgent(
       break;
     }
     if (Date.now() - startTime > TIMEOUT_MS) {
-      console.warn(
-        `\n🛑 Timeout (${TIMEOUT_MS}ms) reached. Aborting order.`,
-      );
+      console.warn(`\n🛑 Timeout (${TIMEOUT_MS}ms) reached. Aborting order.`);
       clearCheckpoint();
       break;
     }
@@ -562,11 +594,16 @@ async function runGrillmanAgent(
       { role: "user", content: context },
     ];
 
+    const temperature =
+      consecutiveFreeTextFailures > 0
+        ? Math.min(0.2 + consecutiveFreeTextFailures * 0.15, 0.9)
+        : 0;
+
     const response = await ollama.chat({
       model: "llama3.2:latest",
       messages,
       tools: getAvailableTools(state),
-      options: { temperature: 0 },
+      options: { temperature },
     });
 
     const toolCalls = response.message.tool_calls ?? [];
@@ -577,8 +614,12 @@ async function runGrillmanAgent(
         break;
       }
 
+      consecutiveFreeTextFailures++;
       console.warn(
-        "  (model replied with free text instead of a tool call):",
+        `  (model replied with free text instead of a tool call, ${consecutiveFreeTextFailures}x in a row, next temperature ${Math.min(
+          0.2 + consecutiveFreeTextFailures * 0.15,
+          0.9,
+        ).toFixed(2)}):`,
         response.message.content,
       );
       history.push("(free text, reinforcing the instruction) → no tool call");
@@ -593,6 +634,8 @@ async function runGrillmanAgent(
       });
       continue;
     }
+
+    consecutiveFreeTextFailures = 0;
 
     for (const [index, toolCall] of toolCalls.entries()) {
       if (toolCallsUsed >= MAX_TOOL_CALLS) break;
